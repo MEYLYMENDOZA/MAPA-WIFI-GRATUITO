@@ -4,11 +4,13 @@ import folium
 import streamlit as st
 from streamlit_folium import st_folium
 from geopy.distance import geodesic
+from folium.plugins import PolyLineTextPath
+import networkx as nx
 
-st.set_page_config(page_title="WiFi manual con grafo", layout="centered")
-st.title("📡 Medición de distancia desde tu punto en el mapa hasta WiFi seleccionado")
+st.set_page_config(page_title="Ruta al WiFi más cercano", layout="centered")
+st.title("🌐 Ruta óptima desde tu ubicación hasta el WiFi más cercano")
 
-# Lista de distritos posibles
+# Selección de distrito y modo
 distritos = sorted([
     "Ate", "Barranco", "Breña", "Carabayllo", "Cercado de Lima", "Chorrillos",
     "Comas", "El Agustino", "Independencia", "Jesús María", "La Molina",
@@ -19,48 +21,32 @@ distritos = sorted([
     "Surquillo", "Villa El Salvador", "Villa María del Triunfo", "Callao"
 ])
 
-# Elegir distrito
-distrito = st.selectbox("Selecciona un distrito de Lima:", distritos)
+distrito = st.selectbox("Selecciona un distrito:", distritos)
+modo = st.selectbox("Modo de transporte:", ["Peatonal", "Vehicular"])
+tipo_red = "walk" if modo == "Peatonal" else "drive"
+velocidad_mpm = 75 if tipo_red == "walk" else 250
 
-# Función para obtener puntos WiFi públicos desde OSM
 @st.cache_data
 def obtener_wifi(distrito):
-    try:
-        lugar = ox.geocode_to_gdf(f"{distrito}, Lima, Peru")
-        tags = {"internet_access": "wlan"}
-        gdf = ox.features.features_from_polygon(lugar.geometry.iloc[0], tags)
-        gdf = gdf[gdf.geometry.geom_type == "Point"]
-        df = pd.DataFrame({
-            "nombre_lugar": gdf.get("name", "WiFi público"),
-            "latitud": gdf.geometry.y,
-            "longitud": gdf.geometry.x
-        })
-        return df.reset_index(drop=True)
-    except Exception as e:
-        st.warning(f"No se encontraron puntos WiFi para {distrito}: {e}")
-        return pd.DataFrame()
+    lugar = ox.geocode_to_gdf(f"{distrito}, Lima, Peru")
+    tags = {"internet_access": "wlan"}
+    gdf = ox.features_from_polygon(lugar.geometry.iloc[0], tags)
+    gdf = gdf[gdf.geometry.geom_type == "Point"]
+    df = pd.DataFrame({
+        "nombre_lugar": gdf.get("name", "WiFi público"),
+        "latitud": gdf.geometry.y,
+        "longitud": gdf.geometry.x
+    })
+    return df.reset_index(drop=True)
 
-# Cargar WiFi
-df = obtener_wifi(distrito)
-st.markdown(f"### 🔍 Se encontraron **{len(df)} puntos WiFi** en {distrito}")
-if df.empty:
-    st.stop()
+@st.cache_data
+def obtener_grafo(distrito, tipo_red):
+    lugar = ox.geocode_to_gdf(f"{distrito}, Lima, Peru")
+    grafo = ox.graph_from_polygon(lugar.geometry.iloc[0], network_type=tipo_red)
+    componente = nx.node_connected_component(grafo.to_undirected(), list(grafo.nodes)[0])
+    return grafo.subgraph(componente).copy()
 
-df.drop_duplicates(subset=["latitud", "longitud"], inplace=True)
-
-# Crear mapa
-m = folium.Map(location=[df.latitud.mean(), df.longitud.mean()], zoom_start=14)
-
-# Agregar nodos WiFi
-for idx, row in df.iterrows():
-    folium.Marker(
-        [row.latitud, row.longitud],
-        popup=row.nombre_lugar or "WiFi público",
-        icon=folium.Icon(color="green")
-    ).add_to(m)
-
-# 🔗 Algoritmo de Prim para conexiones
-def conectar_con_prim(df):
+def conectar_con_prim(df, mapa):
     lugares = df[["nombre_lugar", "latitud", "longitud"]].values
     if len(lugares) < 2:
         return
@@ -81,47 +67,85 @@ def conectar_con_prim(df):
         visitados[v] = True
         conexiones.append((lugares[u], lugares[v]))
     for a, b in conexiones:
-        folium.PolyLine([(a[1], a[2]), (b[1], b[2])], color="blue", weight=2).add_to(m)
+        folium.PolyLine([(a[1], a[2]), (b[1], b[2])], color="blue", weight=2, tooltip="Conexión WiFi (Prim)").add_to(mapa)
 
-conectar_con_prim(df)
+# Cargar datos
+df = obtener_wifi(distrito)
+grafo = obtener_grafo(distrito, tipo_red)
 
-# 🧭 Paso 1: usuario hace clic para marcar ubicación
-st.markdown("### 🧭 Marca tu ubicación haciendo clic en el mapa")
+if df.empty or grafo is None:
+    st.warning("No se pudieron obtener puntos WiFi o red vial.")
+    st.stop()
 
+df.drop_duplicates(subset=["latitud", "longitud"], inplace=True)
+m = folium.Map(location=[df.latitud.mean(), df.longitud.mean()], zoom_start=15)
+
+for _, row in df.iterrows():
+    folium.Marker(
+        [row.latitud, row.longitud],
+        popup=row.nombre_lugar or "WiFi público",
+        icon=folium.Icon(color="green")
+    ).add_to(m)
+
+# Conectar puntos WiFi entre sí
+conectar_con_prim(df, m)
+
+st.markdown("### 🧭 Haz clic en el mapa para marcar tu ubicación")
 respuesta = st_folium(m, width=800, height=600)
 
 if respuesta and respuesta.get("last_clicked"):
-    lat_usuario = respuesta["last_clicked"]["lat"]
-    lon_usuario = respuesta["last_clicked"]["lng"]
-    st.success(f"📍 Ubicación registrada: ({lat_usuario:.6f}, {lon_usuario:.6f})")
+    lat_user = respuesta["last_clicked"]["lat"]
+    lon_user = respuesta["last_clicked"]["lng"]
+    st.success(f"📍 Ubicación registrada: ({lat_user:.6f}, {lon_user:.6f})")
 
-    # Paso 2: elegir punto WiFi
-    st.markdown("### 📶 Ahora selecciona un punto WiFi para medir la distancia")
-    lista_wifi = df["nombre_lugar"].fillna("WiFi público").tolist()
-    punto_wifi = st.selectbox("Punto WiFi disponible:", lista_wifi)
+    nodo_origen = ox.distance.nearest_nodes(grafo, lon_user, lat_user)
 
-    if punto_wifi:
-        destino = df[df["nombre_lugar"] == punto_wifi].iloc[0]
-        lat_wifi = destino["latitud"]
-        lon_wifi = destino["longitud"]
+    mejor_ruta, menor_dist, wifi_seleccionado = None, float("inf"), None
+    for _, row in df.iterrows():
+        lat_wifi, lon_wifi = row["latitud"], row["longitud"]
+        nodo_wifi = ox.distance.nearest_nodes(grafo, lon_wifi, lat_wifi)
+        if nx.has_path(grafo, nodo_origen, nodo_wifi):
+            ruta = ox.shortest_path(grafo, nodo_origen, nodo_wifi, weight="length")
+            dist = sum(grafo.edges[u, v, 0].get("length", 0) for u, v in zip(ruta[:-1], ruta[1:]))
+            if dist < menor_dist:
+                mejor_ruta = ruta
+                menor_dist = dist
+                wifi_seleccionado = row
 
-        distancia = geodesic((lat_usuario, lon_usuario), (lat_wifi, lon_wifi)).meters
-        st.markdown(f"📏 Distancia desde tu punto hasta '{punto_wifi}': **{distancia:.2f} metros**")
+    if mejor_ruta:
+        coords = [(grafo.nodes[n]['y'], grafo.nodes[n]['x']) for n in mejor_ruta]
+        lat_wifi = wifi_seleccionado["latitud"]
+        lon_wifi = wifi_seleccionado["longitud"]
+        nombre_wifi = wifi_seleccionado["nombre_lugar"] or "WiFi público"
 
-        # Mostrar ubicación del usuario
+        st.markdown(f"📶 WiFi más accesible ({modo.lower()}): *{nombre_wifi}*")
+
         folium.Marker(
-            [lat_usuario, lon_usuario],
+            [lat_user, lon_user],
             tooltip="Tu ubicación",
             icon=folium.Icon(color="red", icon="user")
         ).add_to(m)
 
-        # Dibujar arista entre ubicación y punto WiFi
+        folium.PolyLine([(lat_user, lon_user), coords[0]], color="gray", weight=2, tooltip="Conexión al grafo").add_to(m)
+        folium.PolyLine([coords[-1], (lat_wifi, lon_wifi)], color="gray", weight=2, tooltip="Tramo final al WiFi").add_to(m)
+
         folium.PolyLine(
-            [(lat_usuario, lon_usuario), (lat_wifi, lon_wifi)],
-            color="orange", weight=3, tooltip="Distancia"
+            coords, color="orange", weight=6, opacity=0.9,
+            tooltip="Ruta sugerida", dash_array="10,5"
         ).add_to(m)
 
-        st.markdown("### 🗺️ Mapa actualizado con conexión entre nodos")
-        st_folium(m, width=800, height=600)
+        PolyLineTextPath(
+            folium.PolyLine(coords),
+            '→', repeat=True, offset=7,
+            attributes={'fill': 'orange', 'font-weight': 'bold', 'font-size': '16'}
+        ).add_to(m)
+
+        minutos = menor_dist / velocidad_mpm / 60
+        st.markdown(f"📏 Distancia: *{menor_dist:.1f} metros*")
+        st.markdown(f"⏱ Tiempo estimado: *{minutos:.1f} minutos*")
+    else:
+        st.warning("No se encontró una ruta conectada desde tu ubicación.")
+
+    st_folium(m, width=800, height=600)
 else:
-    st.info("Haz clic en el mapa para registrar tu ubicación primero.")
+    st.info("Haz clic en el mapa para registrar tu ubicación.")
