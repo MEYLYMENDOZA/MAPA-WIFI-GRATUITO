@@ -10,9 +10,6 @@ import networkx as nx
 st.set_page_config(page_title="Ruta al WiFi más cercano", layout="centered")
 st.title("🌐 Ruta óptima desde tu ubicación hasta el WiFi más cercano")
 
-# Mostrar versión de osmnx
-st.text(f"Versión de OSMnx: {ox.__version__}")
-
 # Selección de distrito y modo
 distritos = sorted([
     "Ate", "Barranco", "Breña", "Carabayllo", "Cercado de Lima", "Chorrillos",
@@ -102,33 +99,23 @@ if respuesta and respuesta.get("last_clicked"):
     st.success(f"📍 Ubicación registrada: ({lat_user:.6f}, {lon_user:.6f})")
 
     try:
-        if hasattr(ox, "nearest_nodes"):
-            nodo_origen = ox.nearest_nodes(grafo, lon_user, lat_user)
-        else:
-            from osmnx import distance
-            nodo_origen = distance.nearest_nodes(grafo, lon_user, lat_user)
+        nodo_origen = ox.distance.nearest_nodes(grafo, lon_user, lat_user)
     except Exception as e:
-        st.error(f"❌ Error al encontrar el nodo más cercano: {e}")
+        st.error("❌ Error al encontrar el nodo más cercano: asegúrate de tener instalada la librería `scikit-learn`.\n\n" +
+                 "Instala con: `pip install scikit-learn`")
         st.stop()
 
     mejor_ruta, menor_dist, wifi_seleccionado = None, float("inf"), None
     for _, row in df.iterrows():
         lat_wifi, lon_wifi = row["latitud"], row["longitud"]
-        try:
-            if hasattr(ox, "nearest_nodes"):
-                nodo_wifi = ox.nearest_nodes(grafo, lon_wifi, lat_wifi)
-            else:
-                nodo_wifi = distance.nearest_nodes(grafo, lon_wifi, lat_wifi)
-
-            if nx.has_path(grafo, nodo_origen, nodo_wifi):
-                ruta = ox.shortest_path(grafo, nodo_origen, nodo_wifi, weight="length")
-                dist = sum(grafo.edges[u, v, 0].get("length", 0) for u, v in zip(ruta[:-1], ruta[1:]))
-                if dist < menor_dist:
-                    mejor_ruta = ruta
-                    menor_dist = dist
-                    wifi_seleccionado = row
-        except:
-            continue
+        nodo_wifi = ox.distance.nearest_nodes(grafo, lon_wifi, lat_wifi)
+        if nx.has_path(grafo, nodo_origen, nodo_wifi):
+            ruta = ox.shortest_path(grafo, nodo_origen, nodo_wifi, weight="length")
+            dist = sum(grafo.edges[u, v, 0].get("length", 0) for u, v in zip(ruta[:-1], ruta[1:]))
+            if dist < menor_dist:
+                mejor_ruta = ruta
+                menor_dist = dist
+                wifi_seleccionado = row
 
     if mejor_ruta:
         coords = [(grafo.nodes[n]['y'], grafo.nodes[n]['x']) for n in mejor_ruta]
@@ -164,6 +151,8 @@ if respuesta and respuesta.get("last_clicked"):
     else:
         st.warning("No se encontró una ruta conectada desde tu ubicación.")
 
+    # Mostrar el mapa final
+    st.markdown("### 🗺️ Ruta sugerida:")
     st_folium(m, width=800, height=600)
 else:
     st.info("Haz clic en el mapa para registrar tu ubicación.")
