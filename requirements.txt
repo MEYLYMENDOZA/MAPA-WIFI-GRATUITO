@@ -1,6 +1,7 @@
 osmnx
 pandas
-Folio
+folium
 geopy
 streamlit
 streamlit-folium
+networkx
