@@ -1,7 +1,7 @@
-osmnx
-pandas
-folium
-geopy
 streamlit
 streamlit-folium
+osmnx
+geopandas
+folium
 networkx
+geopy
