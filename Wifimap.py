@@ -98,12 +98,7 @@ if respuesta and respuesta.get("last_clicked"):
     lon_user = respuesta["last_clicked"]["lng"]
     st.success(f"📍 Ubicación registrada: ({lat_user:.6f}, {lon_user:.6f})")
 
-    try:
-        nodo_origen = ox.distance.nearest_nodes(grafo, lon_user, lat_user)
-    except Exception as e:
-        st.error("❌ Error al encontrar el nodo más cercano: asegúrate de tener instalada la librería `scikit-learn`.\n\n" +
-                 "Instala con: `pip install scikit-learn`")
-        st.stop()
+    nodo_origen = ox.distance.nearest_nodes(grafo, lon_user, lat_user)
 
     mejor_ruta, menor_dist, wifi_seleccionado = None, float("inf"), None
     for _, row in df.iterrows():
@@ -151,8 +146,6 @@ if respuesta and respuesta.get("last_clicked"):
     else:
         st.warning("No se encontró una ruta conectada desde tu ubicación.")
 
-    # Mostrar el mapa final
-    st.markdown("### 🗺️ Ruta sugerida:")
     st_folium(m, width=800, height=600)
 else:
     st.info("Haz clic en el mapa para registrar tu ubicación.")
